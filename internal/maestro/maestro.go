@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	releaseURL = "https://github.com/devicelab-dev/maestro-ios-device/releases/latest/download"
+	releaseURL = "https://github.com/BlueShork/maestro-ios-device/releases/latest/download"
 	jarsZip    = "maestro-jars.zip"
 	runnerZip  = "maestro-ios-runner.zip"
 	runnerDir  = ".maestro/maestro-ios-xctest-runner"
