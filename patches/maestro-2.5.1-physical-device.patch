@@ -13,7 +13,7 @@ index 99dae8a..e5ccbd9 100644
          names = ["--device", "--udid"],
          description = ["(Optional) Device ID to run on explicitly, can be a comma separated list of IDs: --device \"Emulator_1,Emulator_2\" "],
 diff --git a/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt b/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
-index f55271f..f4eea15 100644
+index f55271f..6a6821d 100644
 --- a/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
 +++ b/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
 @@ -226,7 +226,10 @@ class TestCommand : Callable<Int> {
@@ -28,18 +28,19 @@ index f55271f..f4eea15 100644
      @CommandLine.Spec
      lateinit var commandSpec: CommandLine.Model.CommandSpec
  
-@@ -532,11 +535,22 @@ class TestCommand : Callable<Int> {
+@@ -532,11 +535,20 @@ class TestCommand : Callable<Int> {
          }
      }
  
 -    private fun selectPort(effectiveShards: Int): Int =
 -        if (effectiveShards == 1) 7001
 +    private fun selectPort(effectiveShards: Int): Int {
++        // A user-specified --driver-host-port points at an ALREADY-RUNNING XCTest
++        // driver (the maestro-ios-device bridge forwards local <port> → device
++        // :22087). maestro connects to it over HTTP, so the port is expected to be
++        // occupied — do NOT check bind-availability here; just use it verbatim.
 +        val userPort = driverHostPort ?: parent?.driverHostPort
 +        if (userPort != null) {
-+            if (!isPortAvailable(userPort)) {
-+                throw CliError("Requested driver host port $userPort is not available")
-+            }
 +            return userPort
 +        }
 +        return if (effectiveShards == 1) 7001
@@ -47,9 +48,6 @@ index f55271f..f4eea15 100644
              usedPorts.putIfAbsent(port, true) == null
          } ?: error("No available ports found")
 +    }
-+
-+    private fun isPortAvailable(port: Int): Boolean =
-+        try { java.net.ServerSocket(port).use { true } } catch (e: java.io.IOException) { false }
  
      private fun runSingleFlow(
          maestro: Maestro,
