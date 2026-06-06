@@ -1,0 +1,170 @@
+diff --git a/maestro-cli/src/main/java/maestro/cli/App.kt b/maestro-cli/src/main/java/maestro/cli/App.kt
+index 99dae8a..e5ccbd9 100644
+--- a/maestro-cli/src/main/java/maestro/cli/App.kt
++++ b/maestro-cli/src/main/java/maestro/cli/App.kt
+@@ -95,6 +95,9 @@ class App {
+     @Option(names = ["--port"], hidden = true)
+     var port: Int? = null
+ 
++    @Option(names = ["--driver-host-port"], hidden = true)
++    var driverHostPort: Int? = null
++
+     @Option(
+         names = ["--device", "--udid"],
+         description = ["(Optional) Device ID to run on explicitly, can be a comma separated list of IDs: --device \"Emulator_1,Emulator_2\" "],
+diff --git a/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt b/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
+index f55271f..f4eea15 100644
+--- a/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
++++ b/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
+@@ -226,7 +226,10 @@ class TestCommand : Callable<Int> {
+         description = ["Device ID to run on explicitly, can be a comma separated list of IDs: --device \"Emulator_1,Emulator_2\" "],
+     )
+     var deviceId: String? = null
+-    
++
++    @Option(names = ["--driver-host-port"], hidden = true)
++    var driverHostPort: Int? = null
++
+     @CommandLine.Spec
+     lateinit var commandSpec: CommandLine.Model.CommandSpec
+ 
+@@ -532,11 +535,22 @@ class TestCommand : Callable<Int> {
+         }
+     }
+ 
+-    private fun selectPort(effectiveShards: Int): Int =
+-        if (effectiveShards == 1) 7001
++    private fun selectPort(effectiveShards: Int): Int {
++        val userPort = driverHostPort ?: parent?.driverHostPort
++        if (userPort != null) {
++            if (!isPortAvailable(userPort)) {
++                throw CliError("Requested driver host port $userPort is not available")
++            }
++            return userPort
++        }
++        return if (effectiveShards == 1) 7001
+         else (7001..7128).shuffled().find { port ->
+             usedPorts.putIfAbsent(port, true) == null
+         } ?: error("No available ports found")
++    }
++
++    private fun isPortAvailable(port: Int): Boolean =
++        try { java.net.ServerSocket(port).use { true } } catch (e: java.io.IOException) { false }
+ 
+     private fun runSingleFlow(
+         maestro: Maestro,
+diff --git a/maestro-cli/src/main/java/maestro/cli/session/MaestroSessionManager.kt b/maestro-cli/src/main/java/maestro/cli/session/MaestroSessionManager.kt
+index d62d063..2d13fd7 100644
+--- a/maestro-cli/src/main/java/maestro/cli/session/MaestroSessionManager.kt
++++ b/maestro-cli/src/main/java/maestro/cli/session/MaestroSessionManager.kt
+@@ -107,6 +107,9 @@ object MaestroSessionManager {
+             selectedDevice = selectedDevice,
+             connectToExistingSession = if (isStudio) {
+                 false
++            } else if (driverHostPort != null) {
++                // Custom port specified → skip session store check for all devices
++                false
+             } else {
+                 SessionStore.hasActiveSessions(
+                     sessionId,
+@@ -152,7 +155,8 @@ object MaestroSessionManager {
+         if (host == null) {
+             val device = PickDeviceInteractor.pickDevice(deviceId, driverHostPort, platform, deviceIndex)
+ 
+-            if (device.deviceType == Device.DeviceType.REAL && device.platform == Platform.IOS) {
++            // Only validate/build driver when NOT using custom driver port
++            if (device.deviceType == Device.DeviceType.REAL && device.platform == Platform.IOS && driverHostPort == null) {
+                 PrintUtils.message("Detected connected iPhone with ${device.instanceId}!")
+                 val driverBuilder = DriverBuilder()
+                 RealIOSDeviceDriver(
+@@ -441,7 +445,8 @@ object MaestroSessionManager {
+ 
+         return Maestro.ios(
+             driver = iosDriver,
+-            openDriver = openDriver || xcTestDevice.isShutdown(),
++            // Only check isShutdown() if not using custom driver port (avoids accessing driver files)
++            openDriver = if (driverHostPort != null) openDriver else (openDriver || xcTestDevice.isShutdown()),
+         )
+     }
+ 
+diff --git a/maestro-client/src/main/java/maestro/device/DeviceService.kt b/maestro-client/src/main/java/maestro/device/DeviceService.kt
+index 5f6162c..2906ab5 100644
+--- a/maestro-client/src/main/java/maestro/device/DeviceService.kt
++++ b/maestro-client/src/main/java/maestro/device/DeviceService.kt
+@@ -353,7 +353,11 @@ object DeviceService {
+ 
+         return connectedIphoneList.mapNotNull { device ->
+             val udid = device.hardwareProperties?.udid
+-            if (device.connectionProperties.tunnelState != DeviceCtlResponse.ConnectionProperties.CONNECTED || udid == null) {
++            // Accept devices that are either connected via tunnel OR have Developer Mode enabled
++            val isDeveloperModeEnabled = device.deviceProperties?.developerModeStatus == "enabled"
++            val isTunnelConnected = device.connectionProperties.tunnelState == DeviceCtlResponse.ConnectionProperties.CONNECTED
++
++            if (udid == null || (!isTunnelConnected && !isDeveloperModeEnabled)) {
+                 return@mapNotNull null
+             }
+ 
+diff --git a/maestro-ios-driver/src/main/kotlin/util/IOSDevice.kt b/maestro-ios-driver/src/main/kotlin/util/IOSDevice.kt
+index 543360e..d600a93 100644
+--- a/maestro-ios-driver/src/main/kotlin/util/IOSDevice.kt
++++ b/maestro-ios-driver/src/main/kotlin/util/IOSDevice.kt
+@@ -37,6 +37,7 @@ data class DeviceCtlResponse(
+     data class DeviceProperties(
+         val name: String?,
+         val osVersionNumber: String?,
++        val developerModeStatus: String?,
+     )
+ 
+     @JsonIgnoreProperties(ignoreUnknown = true)
+diff --git a/maestro-ios/src/main/java/ios/LocalIOSDevice.kt b/maestro-ios/src/main/java/ios/LocalIOSDevice.kt
+index 5d6eeaa..7c59ce2 100644
+--- a/maestro-ios/src/main/java/ios/LocalIOSDevice.kt
++++ b/maestro-ios/src/main/java/ios/LocalIOSDevice.kt
+@@ -104,7 +104,13 @@ class LocalIOSDevice(
+         id: String,
+         launchArguments: Map<String, Any>,
+     ) {
+-        deviceController.launch(id, launchArguments)
++        try {
++            // Try deviceController first (supports launch arguments for simulators)
++            deviceController.launch(id, launchArguments)
++        } catch (e: NotImplementedError) {
++            // Fall back to XCTest API for real devices (no launch arguments support)
++            xcTestDevice.launch(id, launchArguments)
++        }
+     }
+ 
+     override fun stop(id: String) {
+diff --git a/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt b/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
+index cd09de5..a49b0b5 100644
+--- a/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
++++ b/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
+@@ -56,7 +56,13 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
+     }
+ 
+     override fun clearAppState(id: String) {
+-        TODO("Not yet implemented")
++        logger.warn(
++            "clearState is not supported on real iOS devices due to iOS security restrictions. " +
++            "App state will NOT be cleared. " +
++            "Workarounds: (1) Remove clearState from tests, (2) Add app-level reset, " +
++            "(3) Manually reinstall app between test runs"
++        )
++        // Do nothing - test continues without clearing state
+     }
+ 
+     override fun clearKeychain(): Result<Unit, Throwable> {
+@@ -124,8 +130,9 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
+     }
+ 
+     override fun close() {
+-        logger.info("[Start] Uninstall the runner app")
+-        uninstall(id = LocalXCTestInstaller.UI_TEST_RUNNER_APP_BUNDLE_ID)
+-        logger.info("[Done] Uninstall the runner app")
++        // Skip uninstalling runner app on real devices to allow session reuse
++        // logger.info("[Start] Uninstall the runner app")
++        // uninstall(id = LocalXCTestInstaller.UI_TEST_RUNNER_APP_BUNDLE_ID)
++        // logger.info("[Done] Uninstall the runner app")
+     }
+ }
+\ No newline at end of file
