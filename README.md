@@ -1,92 +1,60 @@
-# maestro-ios-device
+# maestro-ios-device (BlueShork fork — Maestro 2.5.1)
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
-[![Maestro 2.x](https://img.shields.io/badge/Maestro-2.x-green.svg)](https://maestro.mobile.dev)
+[![Maestro 2.5.1](https://img.shields.io/badge/Maestro-2.5.1-green.svg)](https://maestro.mobile.dev)
 
-> 🚀 **Looking for more than just iOS device support?**
->
-> **[maestro-runner](https://github.com/devicelab-dev/maestro-runner)** includes everything `maestro-ios-device` does — **3.6x faster, 14x less memory** (single binary, no JVM startup).
->
-> - ✅ **Real iOS devices** — built-in, no patching needed
-> - ✅ **Android emulators, simulators & real devices**
-> - ✅ **Parallel execution** — dynamic work distribution across devices
-> - ✅ **CI/CD ready** — instant cold starts, GitHub Actions / GitLab / Jenkins
-> - ✅ **Cloud testing** — BrowserStack, Sauce Labs, LambdaTest via Appium
-> - ✅ **Zero migration** — runs your existing Maestro YAML flows as-is
->
-> ```bash
-> curl -fsSL https://open.devicelab.dev/install/maestro-runner | bash
-> maestro-runner --platform ios test flow.yaml
-> ```
->
-> 👉 **[Install maestro-runner →](https://github.com/devicelab-dev/maestro-runner)**
+**Run Maestro UI tests on real iOS devices** — iPhone/iPad physical-device testing
+via an on-device XCTest driver and automatic USB port forwarding.
 
-**Run Maestro UI tests on real iOS devices** — iPhone and iPad physical device testing with XCTest driver and automatic port forwarding.
+> ℹ️ **This is a maintained fork.** The original
+> [devicelab-dev/maestro-ios-device](https://github.com/devicelab-dev/maestro-ios-device)
+> (Apache-2.0) is frozen and only patches Maestro **2.0.9 – 2.1.0**. This fork adds
+> **Maestro 2.5.1** support so it works with current Maestro installs — it's what powers
+> physical-iOS support in **[Maestro Deck](#-powering-maestro-deck)**.
 
-> [!NOTE]
-> This repo remains fully supported until Maestro adds official iOS physical device support.
+> Patch sources: [PR #2856](https://github.com/mobile-dev-inc/Maestro/pull/2856) (real
+> iOS device support) re-applied on the `cli-2.5.1` Maestro tag — see
+> [`patches/`](./patches) for the reproducible diff. Originally built by
+> [DeviceLab](https://devicelab.dev).
 
-> ⚠️ **Unofficial Community Tool**
-> This is not affiliated with or endorsed by mobile.dev or the Maestro project.
+## What it does
 
-> Built from [PR #2856](https://github.com/mobile-dev-inc/Maestro/pull/2856) — for source code, please refer to the [PR #2856](https://github.com/mobile-dev-inc/Maestro/pull/2856).
-
-*Built by [DeviceLab](https://devicelab.dev) — stop renting devices you already own.*
-
-## Table of Contents
-
-- [Features](#what-it-does)
-- [Compatibility](#compatibility)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Usage](#usage)
-- [How It Works](#how-it-works)
-- [Limitations](#limitations)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
-
-## What It Does
-
-1. Patches your existing Maestro installation with real device support
-2. Builds and runs the XCTest driver on your iOS device
-3. Sets up port forwarding so Maestro can communicate with the device
+1. Patches your existing Maestro install with real-device support (swaps in patched
+   2.5.1 jars; your originals are backed up first).
+2. Builds and runs the XCTest driver on your iOS device.
+3. Sets up USB port forwarding so Maestro can talk to the device.
 
 ## Compatibility
 
-| Maestro Version | Status |
+| Maestro version | Status |
 |-----------------|--------|
-| 2.1.0 | ✅ Supported |
-| 2.0.10 | ✅ Supported |
-| 2.0.9 | ✅ Supported |
+| **2.5.1** | ✅ Supported (this fork) |
+| 2.1.0 / 2.0.10 / 2.0.9 | ✅ Supported (upstream jars, retained) |
 | Other 2.x | ❌ Not tested |
 | 1.x | ❌ Not supported |
 
-> **Note:** We build patches against specific Maestro releases. Using unsupported versions may cause issues.
+> Patches are built against specific Maestro releases. Using an unsupported version
+> will fail the `setup` version check.
 
 ## Requirements
 
-- macOS
-- [Maestro 2.x](https://maestro.mobile.dev) installed
-- Xcode with command line tools
-- Apple Developer account (free or paid)
-- iOS device connected via USB
+- macOS (iOS device automation is Apple-toolchain-only — no Windows/Linux)
+- [Maestro **2.5.1**](https://maestro.mobile.dev) installed (`maestro --version`)
+- Full Xcode (the on-device runner is built with `xcodebuild`)
+- An Apple Developer account / Team ID (free works; its cert expires every 7 days)
+- An iOS device on iOS 17+ with **Developer Mode** enabled, connected via USB and trusted
 
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/devicelab-dev/maestro-ios-device/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BlueShork/maestro-ios-device/main/setup.sh | bash
 ```
 
-This will:
+This downloads the `maestro-ios-device` binary + the patched 2.5.1 jars + the XCTest
+runner, backs up your current Maestro jars, and patches Maestro.
 
-- Download the `maestro-ios-device` binary
-- Download patched JARs and iOS runner
-- Backup your current Maestro installation
-- Patch Maestro with real device support
-
-### Verify Installation
+Verify:
 
 ```bash
 maestro-ios-device --version
@@ -94,39 +62,18 @@ maestro-ios-device --version
 
 ## Usage
 
-### 1. Start the Device Bridge
-
-Keep this running in a terminal:
-
 ```bash
+# 1. Start the device bridge (keep it running):
 maestro-ios-device --team-id YOUR_TEAM_ID --device DEVICE_UDID
+
+# 2. In another terminal, run a flow:
+maestro --driver-host-port 6001 --device DEVICE_UDID test flow.yaml
 ```
 
-### 2. Run Maestro Tests
+**Find your Team ID:** `security find-identity -v -p codesigning | grep Developer`
+(the 10-char code in parentheses), or Xcode → Settings → Accounts → Team ID.
 
-In another terminal:
-
-```bash
-maestro --driver-host-port 6001 --device DEVICE_UDID --app-file /path/to/app.ipa test flow.yaml
-```
-
-### Finding Your Team ID
-
-```bash
-# List available teams
-security find-identity -v -p codesigning | grep "Developer"
-```
-
-Or in Xcode: **Xcode → Settings → Accounts → Select Team → Team ID**
-
-### Finding Your Device UDID
-
-```bash
-# List connected devices
-xcrun xctrace list devices
-```
-
-Or in Finder: **Select your iPhone → Click device name to reveal UDID**
+**Find your device UDID:** `xcrun xctrace list devices`, or Finder → select the iPhone.
 
 ## Options
 
@@ -135,110 +82,79 @@ Or in Finder: **Select your iPhone → Click device name to reveal UDID**
 | `--team-id` | Apple Developer Team ID (required) |
 | `--device` | Device UDID (required) |
 | `--driver-host-port` | Local port (default: auto from 6001) |
-| `--uninstall` | Restore original Maestro installation |
 | `--version` | Show version |
 | `--help` | Show help |
 
-## How It Works
+## How it works
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
+┌─────────────┐     ┌───────────────────┐     ┌─────────────┐
 │   Maestro   │────▶│ maestro-ios-device│────▶│ iOS Device  │
-│  (patched)  │     │  (port forward)  │     │ (XCTest)    │
-└─────────────┘     └──────────────────┘     └─────────────┘
-     :6001                                        :22087
+│  (patched)  │     │   (port forward)  │     │  (XCTest)   │
+└─────────────┘     └───────────────────┘     └─────────────┘
+     :6001                                         :22087
 ```
 
-1. **maestro-ios-device** builds and installs the XCTest runner on your device
-2. The runner starts an HTTP server on device port 22087
-3. Port forwarding connects localhost:6001 → device:22087
-4. Patched Maestro sends commands via `--driver-host-port 6001`
+1. `maestro-ios-device` builds and installs the XCTest runner on the device.
+2. The runner serves an HTTP driver on device port `22087`.
+3. Port forwarding maps `localhost:6001 → device:22087` (over usbmux — no sudo).
+4. Patched Maestro drives the device via `--driver-host-port 6001`.
 
-## Limitations
+The `--driver-host-port` flag is registered `hidden` in the 2.5.1 patch, so it won't show
+in `maestro --help` — that's expected; it is still accepted on `maestro test`.
 
-Some commands have limited support on real iOS devices due to iOS restrictions:
+## Limitations (real devices)
+
+Some commands are restricted by iOS itself:
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `clearState` | ✅ Works | Reinstalls app (requires `--app-file`) |
-| `setLocation` | ⚠️ Limited | Requires additional setup |
-| `addMedia` | ❌ Not supported | iOS restriction |
+| `clearState` | ⚠️ No-op | Not permitted on real devices; logs a warning and continues |
+| `setLocation` | ⚠️ Limited | Requires extra setup |
+| `addMedia` | ❌ Unsupported | iOS restriction |
 
-> **Note:** The `--app-file` flag is required for real device testing.
+## 🃏 Powering Maestro Deck
 
-## Uninstallation
+This fork is what gives **Maestro Deck** — a desktop app for driving Maestro on
+Android, iOS simulators, iOS **physical devices**, and Web — its one-click physical
+iPhone support. Maestro Deck auto-installs this bridge, builds the runner, and gives you
+a live screen + view-hierarchy inspector + tap/text + flow runs on a real device, right
+next to the simulator and Android experiences. 🚀
 
-Restore your original Maestro installation:
+(The physical-device preview tops out at ~5 fps — Apple removed the OS-level iPhone
+screen-capture path on macOS 26 — while simulators stay buttery-smooth via the
+CoreSimulator framebuffer.)
+
+## Uninstall / restore
 
 ```bash
-maestro-ios-device --uninstall
+cp ~/.maestro/backup/* "$(dirname "$(dirname "$(readlink -f "$(which maestro)")")")/lib/"
 ```
 
-Or manually:
+(or just re-install Maestro 2.5.1 via Homebrew).
+
+## Rebuilding the patched jars
 
 ```bash
-cp ~/.maestro/backup/* ~/.maestro/lib/
+git clone --depth 1 --branch cli-2.5.1 https://github.com/mobile-dev-inc/Maestro.git
+cd Maestro && git apply ../patches/maestro-2.5.1-physical-device.patch
+JAVA_HOME=<jdk-21> ./gradlew :maestro-cli:installDist
+# jars land in maestro-cli/build/install/maestro/lib/ (cli, client, ios-driver, ios)
 ```
-
-## When to Stop Using This
-
-This tool is temporary. Once [PR #2856](https://github.com/mobile-dev-inc/Maestro/pull/2856) is merged:
-
-1. Run `maestro-ios-device --uninstall`
-2. Update Maestro: `brew upgrade maestro`
-3. Use official iOS device support
-
-We'll update this README when official support lands.
 
 ## Troubleshooting
 
-### "Certificate not trusted"
-
-On your iOS device: **Settings → General → VPN & Device Management → Trust your developer certificate**
-
-### Build fails
-
-- Ensure Xcode command line tools are installed: `xcode-select --install`
-- Open Xcode at least once to accept the license
-- Check that your Apple Developer account is signed in
-
-### Device not found
-
-- Ensure device is connected via USB
-- Trust the computer on your device when prompted
-- Try `xcrun xctrace list devices` to verify connection
-
-### Port already in use
-
-```bash
-# Find process using port 6001
-lsof -i :6001
-
-# Use a different port
-maestro-ios-device --team-id YOUR_TEAM_ID --device DEVICE_UDID --driver-host-port 6002
-```
-
-### XCTest runner crashes
-
-- Ensure your device is running iOS 15+
-- Check Xcode logs: **Window → Devices and Simulators → View Device Logs**
-
-## Contributing
-
-Issues and PRs welcome at [GitHub](https://github.com/devicelab-dev/maestro-ios-device/issues).
+- **`Maestro not patched`** — re-run `setup`; confirm `maestro --version` is 2.5.1.
+- **`Unsupported Maestro version`** — install Maestro 2.5.1 and re-run `setup`.
+- **Build fails / "certificate not trusted"** — usually signing: check the Team ID,
+  Developer Mode, and trust the developer cert on the device
+  (Settings → General → VPN & Device Management).
+- **Stopped working after a Maestro upgrade** — the upgrade overwrote the patched jars;
+  re-run `setup` (and make sure you're back on 2.5.1).
 
 ## License
 
-Apache 2.0 (same as Maestro)
-
-## Disclaimer
-
-This project is not affiliated with, endorsed by, or connected to mobile.dev or the official Maestro project.
-
-This tool patches your existing Maestro installation to add functionality not yet available in the official release.
-
-**Use at your own risk.** We recommend switching to official Maestro once iOS device support is released.
-
----
-
-[Report Issues](https://github.com/devicelab-dev/maestro-ios-device/issues)
+Apache-2.0 (same as Maestro). This project is not affiliated with, endorsed by, or
+connected to mobile.dev, the official Maestro project, or DeviceLab. It patches your
+Maestro install to add functionality not yet in the official release. **Use at your own
+risk.**
