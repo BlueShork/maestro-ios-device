@@ -21,10 +21,10 @@ jobs:
       - name: Build binaries
         run: make build-all
 
-      - name: Create JARs zip
-        run: |
-          cd assets/jars/2.5.1
-          zip -r ../../../maestro-jars.zip .
+      # Stock maestro.zip + the class overlay → dist/maestro-jars-<version>.zip
+      # (the 2.10.0 maestro-cli jar is too big to live in git).
+      - name: Build patched JARs
+        run: scripts/build-jars.sh 2.10.0
 
       - name: Create runner zip
         run: |
@@ -38,7 +38,7 @@ jobs:
           path: |
             dist/maestro-ios-device-darwin-amd64
             dist/maestro-ios-device-darwin-arm64
-            maestro-jars.zip
+            dist/maestro-jars-2.10.0.zip
             maestro-ios-runner.zip
 
       - name: Get version
@@ -60,7 +60,7 @@ jobs:
           files: |
             dist/maestro-ios-device-darwin-amd64
             dist/maestro-ios-device-darwin-arm64
-            maestro-jars.zip
+            dist/maestro-jars-2.10.0.zip
             maestro-ios-runner.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,7 @@
 import FlyingFox
 import XCTest
 import os
+import MaestroDriverLib
 
 @MainActor
 struct ViewHierarchyHandler: HTTPHandler {
@@ -28,9 +29,7 @@ struct ViewHierarchyHandler: HTTPHandler {
                 return HTTPResponse(statusCode: .ok, body: body)
             }
             NSLog("[Start] View hierarchy snapshot for \(foregroundApp)")
-            let appViewHierarchy = try logger.measure(message: "View hierarchy snapshot for \(foregroundApp)") {
-                try getAppViewHierarchy(foregroundApp: foregroundApp, excludeKeyboardElements: requestBody.excludeKeyboardElements)
-            }
+            let appViewHierarchy = try await getAppViewHierarchy(foregroundApp: foregroundApp, excludeKeyboardElements: requestBody.excludeKeyboardElements)
             let viewHierarchy = ViewHierarchy.init(axElement: appViewHierarchy, depth: appViewHierarchy.depth())
             
             NSLog("[Done] View hierarchy snapshot for \(foregroundApp) ")
@@ -45,9 +44,17 @@ struct ViewHierarchyHandler: HTTPHandler {
         }
     }
 
-    func getAppViewHierarchy(foregroundApp: XCUIApplication, excludeKeyboardElements: Bool) throws -> AXElement {
-        SystemPermissionHelper.handleSystemPermissionAlertIfNeeded(foregroundApp: foregroundApp)
+    func getAppViewHierarchy(foregroundApp: XCUIApplication, excludeKeyboardElements: Bool) async throws -> AXElement {
+        // On iOS 26 iPad, com.apple.DocumentManager.DockFolderViewService is reported as the
+        // foreground process on the home screen, but its AX hierarchy is empty. The actual
+        // home screen content lives in SpringBoard. Fall back to SpringBoard when detected.
+        var foregroundApp = foregroundApp
+        if foregroundApp.bundleID == "com.apple.DocumentManager.DockFolderViewService" {
+            NSLog("DockFolderViewService detected as foreground, using SpringBoard hierarchy instead")
+            foregroundApp = springboardApplication
+        }
         let appHierarchy = try getHierarchyWithFallback(foregroundApp)
+        await SystemPermissionHelper.handleSystemPermissionAlertIfNeeded(appHierarchy: appHierarchy, foregroundApp: foregroundApp)
                 
         let statusBars = logger.measure(message: "Fetch status bar hierarchy") {
             fullStatusBars(springboardApplication)
@@ -76,15 +83,29 @@ struct ViewHierarchyHandler: HTTPHandler {
             else {
                 return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
             }
-            
+
+            // Springboard always reports its frame in portrait dimensions (e.g. 1024×1366),
+            // while a landscape app reports them swapped (1366×1024). Without this guard,
+            // the difference would be misinterpreted as a window offset, shifting every
+            // element's coordinates by hundreds of points in the wrong direction.
+            let isSameAreaDifferentOrientation =
+                abs(deviceWidth * deviceHeight - appWidth * appHeight) < 1.0
+                && abs(deviceWidth - appHeight) < 1.0
+                && abs(deviceHeight - appWidth) < 1.0
+
+            if isSameAreaDifferentOrientation {
+                NSLog("Skipping offset adjustment: device and app frames are same size but different orientation")
+                return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
+            }
+
             let offsetX = deviceWidth - appWidth
             let offsetY = deviceHeight - appHeight
             let offset = WindowOffset(offsetX: offsetX, offsetY: offsetY)
-            
+
             NSLog("Adjusting view hierarchy with offset: \(offset)")
-            
+
             let adjustedAppHierarchy = expandElementSizes(appHierarchy, offset: offset)
-            
+
             return AXElement(children: [adjustedAppHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
         } else {
             return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
@@ -138,24 +159,16 @@ struct ViewHierarchyHandler: HTTPHandler {
             hierarchy.children = children
             return hierarchy
         } catch let error {
-            guard isIllegalArgumentError(error) else {
+            guard isRecoverableSnapshotError(error) else {
                 NSLog("Snapshot failure, cannot return view hierarchy due to \(error)")
-                if let nsError = error as NSError?,
-                   nsError.domain == "com.apple.dt.XCTest.XCTFuture",
-                   nsError.code == 1000,
-                   nsError.localizedDescription.contains("Timed out while evaluating UI query") {
+                if (error as NSError).isXCUITestTimeout {
                     throw AppError(type: .timeout, message: error.localizedDescription)
-                } else if let nsError = error as NSError?,
-                           nsError.domain == "com.apple.dt.xctest.automation-support.error",
-                           nsError.code == 6,
-                           nsError.localizedDescription.contains("Unable to perform work on main run loop, process main thread busy for") {
-                    throw AppError(type: .timeout, message: nsError.localizedDescription)
                 } else {
                     throw AppError(message: error.localizedDescription)
                 }
             }
 
-            NSLog("Snapshot failure, getting recovery element for fallback")
+            NSLog("Snapshot failure (\(error.localizedDescription)), getting recovery element for fallback")
             AXClientSwizzler.overwriteDefaultParameters["maxDepth"] = snapshotMaxDepth
             // In apps with bigger view hierarchys, calling
             // `XCUIApplication().snapshot().dictionaryRepresentation` or `XCUIApplication().allElementsBoundByIndex`
@@ -192,8 +205,18 @@ struct ViewHierarchyHandler: HTTPHandler {
         }
     }
 
-    private func isIllegalArgumentError(_ error: Error) -> Bool {
-        error.localizedDescription.contains("Error kAXErrorIllegalArgument getting snapshot for element")
+    /// Transient XCTest snapshot failures that the recovery path (walk from the
+    /// window child, skipping the racing app-level snapshot) can absorb. Both fire
+    /// when the tree is large or changing under `snapshot()`:
+    ///  - `kAXErrorIllegalArgument` — snapshotting a too-large element.
+    ///  - `kAXErrorInvalidUIElement` ("Error getting element frame") — an element
+    ///    went stale mid-snapshot while the UI was updating. Previously this fell
+    ///    through to a fatal 500 that aborted the whole flow; the smaller recovery
+    ///    subtree is far less likely to race, so route it through recovery instead.
+    private func isRecoverableSnapshotError(_ error: Error) -> Bool {
+        let description = error.localizedDescription
+        return description.contains("Error kAXErrorIllegalArgument getting snapshot for element")
+            || description.contains("kAXErrorInvalidUIElement")
     }
 
     private func keyboardHierarchy(_ element: XCUIApplication) -> AXElement? {
@@ -281,7 +304,161 @@ struct ViewHierarchyHandler: HTTPHandler {
     }
 
     private func elementHierarchy(xcuiElement: XCUIElement) throws -> AXElement {
-        let snapshotDictionary = try xcuiElement.snapshot().dictionaryRepresentation
-        return AXElement(snapshotDictionary)
+        let snapshot = try xcuiElement.snapshot()
+        return elementHierarchy(snapshot: snapshot, inheritedOffset: .zero, parentWindowContextID: nil)
+    }
+
+    /// Walks the snapshot tree (not `dictionaryRepresentation`, which is O(subtree)
+    /// per call) and accumulates a coordinate offset across cross-process window
+    /// boundaries so descendant frames land in screen coordinates.
+    private func elementHierarchy(
+        snapshot: XCUIElementSnapshot,
+        inheritedOffset: CGVector,
+        parentWindowContextID: Double?
+    ) -> AXElement {
+        let rawFrame = axFrame(from: snapshot.frame)
+        let windowContextID = kvcDouble(snapshot, "windowContextID") ?? 0
+
+        let boundaryOffset = crossProcessWindowOffset(
+            snapshot: snapshot,
+            rawFrame: rawFrame,
+            parentWindowContextID: parentWindowContextID,
+            windowContextID: windowContextID
+        )
+        let currentOffset = CGVector(
+            dx: inheritedOffset.dx + boundaryOffset.dx,
+            dy: inheritedOffset.dy + boundaryOffset.dy
+        )
+
+        let children = snapshot.children.map { child in
+            elementHierarchy(
+                snapshot: child,
+                inheritedOffset: currentOffset,
+                parentWindowContextID: windowContextID
+            )
+        }
+
+        return AXElement(
+            identifier: snapshot.identifier,
+            frame: offsetFrame(rawFrame, by: currentOffset),
+            value: snapshot.value as? String,
+            title: snapshot.title,
+            label: snapshot.label,
+            elementType: Int(snapshot.elementType.rawValue),
+            enabled: snapshot.isEnabled,
+            horizontalSizeClass: snapshot.horizontalSizeClass.rawValue,
+            verticalSizeClass: snapshot.verticalSizeClass.rawValue,
+            placeholderValue: snapshot.placeholderValue,
+            selected: snapshot.isSelected,
+            hasFocus: snapshot.hasFocus,
+            displayID: kvcInt(snapshot, "displayID") ?? 0,
+            windowContextID: windowContextID,
+            children: children
+        )
+    }
+
+    /// Offset to apply to descendant frames when crossing into a cross-process
+    /// window (e.g. HealthKit/share sheet). All three signals — windowContextID
+    /// transition, remote subtree, finite visibleFrame — must align; the remote
+    /// check guards against in-process boundaries like UITextEffectsWindow where
+    /// a non-zero visibleFrame delta is ordinary clipping.
+    private func crossProcessWindowOffset(
+        snapshot: XCUIElementSnapshot,
+        rawFrame: AXFrame,
+        parentWindowContextID: Double?,
+        windowContextID: Double
+    ) -> CGVector {
+        guard isCrossWindowContextBoundary(parentWindowContextID: parentWindowContextID, windowContextID: windowContextID),
+              containsRemoteSubtree(snapshot),
+              let visibleFrame = visibleFrame(snapshot) else {
+            return .zero
+        }
+
+        return CGVector(
+            dx: visibleFrame.x - rawFrame.x,
+            dy: visibleFrame.y - rawFrame.y
+        )
+    }
+
+    private func isCrossWindowContextBoundary(parentWindowContextID: Double?, windowContextID: Double) -> Bool {
+        guard let parentWindowContextID = parentWindowContextID else {
+            return false
+        }
+        return parentWindowContextID != 0
+            && windowContextID != 0
+            && parentWindowContextID != windowContextID
+    }
+
+    private func containsRemoteSubtree(_ snapshot: XCUIElementSnapshot) -> Bool {
+        if isRemote(snapshot) { return true }
+        return snapshot.children.contains(where: isRemote)
+    }
+
+    private func isRemote(_ snapshot: XCUIElementSnapshot) -> Bool {
+        guard let snapshotObject = snapshot as? NSObject,
+              snapshotObject.responds(to: NSSelectorFromString("isRemote")) else {
+            return false
+        }
+        return (snapshotObject.value(forKey: "isRemote") as? NSNumber)?.boolValue ?? false
+    }
+
+    private func visibleFrame(_ snapshot: XCUIElementSnapshot) -> AXFrame? {
+        guard let snapshotObject = snapshot as? NSObject,
+              snapshotObject.responds(to: NSSelectorFromString("visibleFrame")),
+              let value = snapshotObject.value(forKey: "visibleFrame") as? NSValue else {
+            return nil
+        }
+
+        let rect = value.cgRectValue
+        guard rect.origin.x.isFinite,
+              rect.origin.y.isFinite,
+              rect.size.width.isFinite,
+              rect.size.height.isFinite else {
+            return nil
+        }
+
+        return [
+            "X": Double(rect.origin.x),
+            "Y": Double(rect.origin.y),
+            "Width": Double(rect.size.width),
+            "Height": Double(rect.size.height)
+        ]
+    }
+
+    private func axFrame(from rect: CGRect) -> AXFrame {
+        return [
+            "X": Double(rect.origin.x),
+            "Y": Double(rect.origin.y),
+            "Width": Double(rect.size.width),
+            "Height": Double(rect.size.height)
+        ]
+    }
+
+    private func kvcDouble(_ snapshot: XCUIElementSnapshot, _ key: String) -> Double? {
+        guard let object = snapshot as? NSObject,
+              object.responds(to: NSSelectorFromString(key)) else {
+            return nil
+        }
+        return (object.value(forKey: key) as? NSNumber)?.doubleValue
+    }
+
+    private func kvcInt(_ snapshot: XCUIElementSnapshot, _ key: String) -> Int? {
+        guard let object = snapshot as? NSObject,
+              object.responds(to: NSSelectorFromString(key)) else {
+            return nil
+        }
+        return (object.value(forKey: key) as? NSNumber)?.intValue
+    }
+
+    private func offsetFrame(_ frame: AXFrame, by offset: CGVector) -> AXFrame {
+        guard offset.dx != 0 || offset.dy != 0 else {
+            return frame
+        }
+        return [
+            "X": frame.x + Double(offset.dx),
+            "Y": frame.y + Double(offset.dy),
+            "Width": frame.width,
+            "Height": frame.height
+        ]
     }
 }

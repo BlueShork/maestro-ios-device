@@ -2,6 +2,7 @@ package device
 
 import (
 	"fmt"
+	"time"
 
 	goios "github.com/danielpaulus/go-ios/ios"
 )
@@ -20,6 +21,24 @@ func Get(udid string) (*Device, error) {
 		return nil, fmt.Errorf("device %s not found", udid)
 	}
 	return newDevice(udid, entry), nil
+}
+
+// WaitFor polls usbmux for the device for up to timeout. The iPhone drops off
+// usbmux while it is locked or right after it is plugged in, and comes back
+// within a few seconds once unlocked.
+func WaitFor(udid string, timeout time.Duration) (*Device, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		dev, err := Get(udid)
+		if err == nil {
+			return dev, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("iPhone %s is not reachable over USB. Unlock it and keep it "+
+				"unlocked; if it still doesn't show up, unplug and replug the cable and tap Trust", udid)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func List() ([]Device, error) {
