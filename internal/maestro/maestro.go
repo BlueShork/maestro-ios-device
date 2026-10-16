@@ -87,6 +87,11 @@ func RunSetup() error {
 	fmt.Println("✅ JARs installed")
 
 	fmt.Println("📥 Downloading iOS runner...")
+	// Start from an empty directory: files of an older runner left behind
+	// would change its source hash and could shadow the new sources.
+	if err := os.RemoveAll(runnerPath); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(runnerPath, 0755); err != nil {
 		return err
 	}

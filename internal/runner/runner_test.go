@@ -70,3 +70,13 @@ func TestCheckLog(t *testing.T) {
 		t.Error("test failure not reported")
 	}
 }
+
+func TestDeviceLocked(t *testing.T) {
+	log := "Xcode cannot launch maestro-driver-iosUITests on Ethan's iPhone because the device is locked."
+	if !deviceLocked(log) {
+		t.Error("locked device not detected")
+	}
+	if deviceLocked("Test Suite 'All tests' started") {
+		t.Error("false positive")
+	}
+}

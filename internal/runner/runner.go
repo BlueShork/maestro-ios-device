@@ -279,9 +279,10 @@ func DriverReady(localPort uint16) bool {
 }
 
 func (r *Runner) waitForStartup(logPath string, localPort uint16) error {
-	timeout := time.After(startupTimeout)
+	deadline := time.Now().Add(startupTimeout)
 	ticker := time.NewTicker(readyPoll)
 	defer ticker.Stop()
+	lockedSaid := false
 
 	for {
 		select {
@@ -296,12 +297,28 @@ func (r *Runner) waitForStartup(logPath string, localPort uint16) error {
 			if err := checkLog(string(content), logPath); err != nil {
 				return err
 			}
+			// xcodebuild waits for a locked iPhone on its own and goes on
+			// once it is unlocked: say so, and don't time out on the user.
+			if deviceLocked(string(content)) {
+				if !lockedSaid {
+					fmt.Println("🔒 Unlock the iPhone to continue")
+					lockedSaid = true
+				}
+				deadline = time.Now().Add(startupTimeout)
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("startup timeout (90s):\n%s\n\nFull log: %s", tailLog(logPath, 20), logPath)
+			}
 		case <-r.exited:
 			return fmt.Errorf("runner exited:\n%s\n\nFull log: %s", tailLog(logPath, 20), logPath)
-		case <-timeout:
-			return fmt.Errorf("startup timeout (90s):\n%s\n\nFull log: %s", tailLog(logPath, 20), logPath)
 		}
 	}
+}
+
+// deviceLocked reports whether xcodebuild is waiting for the iPhone to be
+// unlocked ("Xcode cannot launch … because the device is locked").
+func deviceLocked(log string) bool {
+	return strings.Contains(log, "because the device is locked")
 }
 
 // checkLog turns the xcodebuild failures we know into readable errors. Success
