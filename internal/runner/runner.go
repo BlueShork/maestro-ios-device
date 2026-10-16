@@ -206,11 +206,19 @@ func (r *Runner) Start(ctx context.Context, localPort uint16) error {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}
 
+	// A host from an earlier session (its bridge was SIGKILLed) may still own
+	// the device's test session with a dead runner; a second one would wait
+	// on it, so stop it first.
+	killStaleHosts(r.buildDir)
+
 	r.cmd = exec.CommandContext(ctx, "xcodebuild",
 		"test-without-building",
 		"-xctestrun", xctestrun,
 		"-destination", r.destination(),
 		"-derivedDataPath", r.buildOut(),
+		// When the runner dies (cable pulled, phone locked) xcodebuild runs a
+		// devicectl sysdiagnose that keeps it busy for minutes.
+		"-collect-test-diagnostics", "never",
 	)
 	r.cmd.Stdout = r.logFile
 	r.cmd.Stderr = r.logFile
@@ -242,6 +250,13 @@ func (r *Runner) Stop() {
 	if r.logFile != nil {
 		r.logFile.Close()
 	}
+}
+
+// killStaleHosts SIGKILLs `xcodebuild test-without-building` processes that run
+// this device's cached build (their command line holds buildDir, which is
+// unique per device + team), so other devices' runners are left alone.
+func killStaleHosts(buildDir string) {
+	exec.Command("pkill", "-9", "-f", "test-without-building -xctestrun "+buildDir).Run()
 }
 
 // Cleanup stops the runner. The build directory is kept: it is the cache

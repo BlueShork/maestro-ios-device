@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/anthropics/maestro-ios-device/internal/device"
 	"github.com/anthropics/maestro-ios-device/internal/maestro"
@@ -85,7 +86,7 @@ func run() {
 		fatal("%s", err)
 	}
 
-	dev, err := device.Get(*deviceUDID)
+	dev, err := device.WaitFor(*deviceUDID, 10*time.Second)
 	if err != nil {
 		fatal("%s", err)
 	}
