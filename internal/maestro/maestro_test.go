@@ -174,3 +174,20 @@ func TestFindLibInScript(t *testing.T) {
 		})
 	}
 }
+
+func TestSupportedVersions(t *testing.T) {
+	if !isSupportedVersion("2.10.0") {
+		t.Error("2.10.0 should be supported")
+	}
+	for _, v := range []string{"2.5.1", "2.1.0", "2.11.0"} {
+		if isSupportedVersion(v) {
+			t.Errorf("%s should not be supported", v)
+		}
+	}
+}
+
+func TestJarsZip(t *testing.T) {
+	if got := jarsZip("2.10.0"); got != "maestro-jars-2.10.0.zip" {
+		t.Errorf("jarsZip(2.10.0) = %q", got)
+	}
+}

@@ -1,4 +1,5 @@
 import XCTest
+import MaestroDriverLib
 
 struct ScreenSizeHelper {
 
@@ -63,16 +64,37 @@ struct ScreenSizeHelper {
         return orientation
     }
 
+    /// Returns the current UIInterfaceOrientation derived from the device's UIDeviceOrientation.
+    ///
+    /// Per Apple convention, landscape values are swapped between the two enums:
+    /// - UIDeviceOrientation describes the hardware tilt (e.g. `.landscapeLeft` = device rotated left)
+    /// - UIInterfaceOrientation describes the UI's compensating rotation (`.landscapeRight` = UI rotated right)
+    /// The UI always rotates opposite to the device to keep content upright.
+    static func currentInterfaceOrientation() -> UIInterfaceOrientation {
+        let orientation = actualOrientation()
+        return switch orientation {
+        case .landscapeLeft:      .landscapeRight
+        case .landscapeRight:     .landscapeLeft
+        case .portrait:           .portrait
+        case .portraitUpsideDown: .portraitUpsideDown
+        default:                  .portrait
+        }
+    }
+
     /// Takes device orientation into account.
     static func actualScreenSize() throws -> (Float, Float, UIDeviceOrientation)
     {
         let orientation = actualOrientation()
 
         let (width, height) = physicalScreenSize()
+        let isLandscape = orientation == .landscapeLeft || orientation == .landscapeRight
+        let dimsAlreadyMatchOrientation = isLandscape ? (width > height) : (width <= height)
+
         let (actualWidth, actualHeight) =
             switch orientation {
             case .portrait, .portraitUpsideDown: (width, height)
-            case .landscapeLeft, .landscapeRight: (height, width)
+            case .landscapeLeft, .landscapeRight:
+                dimsAlreadyMatchOrientation ? (width, height) : (height, width)
             case .faceDown, .faceUp: (width, height)
             case .unknown:
                 throw AppError(
@@ -89,23 +111,24 @@ struct ScreenSizeHelper {
         width: Float, height: Float, point: CGPoint
     ) -> CGPoint {
         let orientation = actualOrientation()
+        let isLandscape = orientation == .landscapeLeft || orientation == .landscapeRight
+        let dimsAlreadyMatchOrientation = isLandscape && (width > height)
+
+        // When physicalScreenSize() already returns landscape-correct dims,
+        // use the short side as height for the rotation transform.
+        let effectiveWidth = dimsAlreadyMatchOrientation ? height : width
+        let effectiveHeight = dimsAlreadyMatchOrientation ? width : height
 
         return switch orientation {
         case .portrait: point
         case .portraitUpsideDown:
-            CGPoint(x: CGFloat(width) - point.x, y: CGFloat(height) - point.y)
+            CGPoint(x: CGFloat(effectiveWidth) - point.x, y: CGFloat(effectiveHeight) - point.y)
         case .landscapeLeft:
-            CGPoint(x: CGFloat(width) - point.y, y: CGFloat(point.x))
+            CGPoint(x: CGFloat(effectiveWidth) - point.y, y: CGFloat(point.x))
         case .landscapeRight:
-            CGPoint(x: CGFloat(point.y), y: CGFloat(height) - point.x)
-        case .faceUp, .faceDown:
-            // When device is flat, treat as portrait orientation
-            point
-        case .unknown:
-            // Treat unknown orientation as portrait (consistent with actualOrientation())
-            point
-        @unknown default:
-            // Forward compatibility: treat new orientations as portrait
+            CGPoint(x: CGFloat(point.y), y: CGFloat(effectiveHeight) - point.x)
+        default:
+            // .faceUp, .faceDown, unknown — no meaningful 2D rotation, pass through
             point
         }
     }

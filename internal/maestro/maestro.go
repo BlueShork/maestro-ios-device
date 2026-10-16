@@ -14,12 +14,18 @@ import (
 
 const (
 	releaseURL = "https://github.com/BlueShork/maestro-ios-device/releases/latest/download"
-	jarsZip    = "maestro-jars.zip"
 	runnerZip  = "maestro-ios-runner.zip"
 	runnerDir  = ".maestro/maestro-ios-xctest-runner"
 )
 
-var supportedVersions = []string{"2.0.9", "2.0.10", "2.1.0", "2.5.1"}
+// Only 2.10.0: the XCTest runner in assets/ is the 2.10.0 one and is shared by
+// every version, so older patched jars would talk to a mismatched driver.
+var supportedVersions = []string{"2.10.0"}
+
+// jarsZip is the release asset holding the patched jars for a maestro version.
+func jarsZip(version string) string {
+	return "maestro-jars-" + version + ".zip"
+}
 
 func isSupportedVersion(version string) bool {
 	for _, v := range supportedVersions {
@@ -54,7 +60,7 @@ func RunSetup() error {
 	fmt.Printf("Detected Maestro: %s\n", version)
 
 	if !isSupportedVersion(version) {
-		return fmt.Errorf("Unsupported Maestro version: %s\n\nSupported versions: 2.0.9, 2.0.10, 2.1.0\n\nPlease upgrade or downgrade Maestro to a supported version.", version)
+		return fmt.Errorf("Unsupported Maestro version: %s\n\nSupported versions: %s\n\nPlease upgrade or downgrade Maestro to a supported version.", version, strings.Join(supportedVersions, ", "))
 	}
 
 	libPath, err := getLibPath()
@@ -75,7 +81,7 @@ func RunSetup() error {
 	fmt.Println("✅ Backup complete")
 
 	fmt.Println("📥 Downloading JARs...")
-	if err := downloadAndExtract(releaseURL+"/"+jarsZip, libPath); err != nil {
+	if err := downloadAndExtract(releaseURL+"/"+jarsZip(version), libPath); err != nil {
 		return fmt.Errorf("failed to download JARs: %w", err)
 	}
 	fmt.Println("✅ JARs installed")
@@ -98,17 +104,16 @@ func RunSetup() error {
 	return nil
 }
 
+// patchMarkerFlag is a hidden root option that only the patched jars register.
+// Stock maestro accepts --driver-host-port since 2.6, so that flag no longer
+// tells patched and stock installs apart.
+const patchMarkerFlag = "--ios-device-patch"
+
+// The probe exits 0 when the flag parses (help printed) and 2 when picocli
+// rejects it, so a missing or broken maestro also reads as not patched.
 func IsPatched() (bool, error) {
-	// The --driver-host-port flag is registered with hidden=true, so it does not
-	// appear in `maestro --help`. Probe the `test` subcommand help, and treat the
-	// option being accepted (no "Unknown option") as patched.
-	out, err := exec.Command("maestro", "test", "--help").CombinedOutput()
-	if err == nil && strings.Contains(string(out), "driver-host-port") {
-		return true, nil
-	}
-	probe, _ := exec.Command("maestro", "--driver-host-port", "6001", "test", "--help").CombinedOutput()
-	return !strings.Contains(string(probe), "Unknown option") &&
-		!strings.Contains(string(probe), "Unmatched argument"), nil
+	err := exec.Command("maestro", patchMarkerFlag, "test", "--help").Run()
+	return err == nil, nil
 }
 
 func GetRunnerPath() (string, error) {
@@ -329,4 +334,3 @@ func extractFile(f *zip.File, target string) error {
 	_, err = io.Copy(out, rc)
 	return err
 }
-

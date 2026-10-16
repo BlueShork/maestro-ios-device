@@ -1,39 +1,43 @@
-# Fork notes — maestro-ios-device (self-maintained, maestro 2.5.1)
+# Fork notes — maestro-ios-device (self-maintained, maestro 2.10.0)
 
 Fork of [devicelab-dev/maestro-ios-device](https://github.com/devicelab-dev/maestro-ios-device)
 (Apache-2.0), which is frozen/deprecated and only patches maestro 2.0.9–2.1.0. This fork
-adds **maestro 2.5.1** support so maestro-deck can drive a physical iPhone on current maestro.
+adds **maestro 2.10.0** support so maestro-deck can drive a physical iPhone on current
+maestro. (It patched 2.5.1 before; 2.5.1 support was dropped with the 2.10.0 runner.)
+
+Upstream PR #2856 (real iOS device support) was closed unmerged, and stock 2.10.0 still
+cannot run a flow on a physical iPhone: `launchApp` and `clearState` hit
+`TODO("Not yet implemented")` in `DeviceControlIOSDevice`.
 
 ## What changed vs upstream
 
 - `internal/maestro/maestro.go`
-  - `supportedVersions` += `"2.5.1"`.
-  - `IsPatched()` relaxed: maestro 2.5.1's `--driver-host-port` flag is registered with
-    `hidden = true`, so it does NOT appear in `maestro --help`. We now probe
-    `maestro test --help` and accept the flag parsing (no "Unknown option" /
-    "Unmatched argument") as "patched".
-- `assets/jars/2.5.1/` — patched maestro 2.5.1 jars (full runtime set; 4 are patched:
-  `maestro-cli-2.5.1`, `maestro-client`, `maestro-ios-driver`, `maestro-ios`).
-- `patches/maestro-2.5.1-physical-device.patch` — the source diff applied to the maestro
-  `cli-2.5.1` tag to produce those jars (PR #2856 + a back-ported `--driver-host-port`
-  CLI `@Option`). Reproduce with:
-  ```
-  git clone --depth 1 --branch cli-2.5.1 https://github.com/mobile-dev-inc/Maestro.git
-  cd Maestro && git apply ../patches/maestro-2.5.1-physical-device.patch
-  JAVA_HOME=<jdk21> ./gradlew :maestro-cli:installDist
-  # jars land in maestro-cli/build/install/maestro/lib/
-  ```
+  - `supportedVersions` = `["2.10.0"]` only: the XCTest runner in `assets/` is the 2.10.0
+    one and is shared by every version.
+  - jars are downloaded as `maestro-jars-<version>.zip`, so an older bridge binary can
+    never fetch jars for a version it doesn't know.
+  - `IsPatched()` probes the hidden `--ios-device-patch` flag (exit 0 = patched). Stock
+    maestro accepts `--driver-host-port` since 2.6, so that flag no longer works as a probe.
+- `patches/maestro-2.10.0-physical-device.patch` — source diff against the maestro
+  `cli-2.10.0` tag:
+  - `TestCommand.selectPort`: use a user `--driver-host-port` verbatim (stock 2.10.0 throws
+    when the port is busy, and the bridge's forward is exactly what holds it).
+  - `MaestroSessionManager`: with `--driver-host-port`, skip the session-store check, the
+    driver build/validation and the `isShutdown()` probe.
+  - `DeviceService`: list iPhones with Developer Mode enabled, not only tunnel-connected ones.
+  - `LocalIOSDevice.launch`: fall back to XCTest when devicectl's `launch` is unimplemented.
+  - `DeviceControlIOSDevice`: `clearAppState` logs a warning instead of crashing; `close`
+    keeps the runner app installed so sessions can reuse it.
+  - `App`: hidden `--ios-device-patch` marker flag.
+  (The `--driver-host-port` option itself is upstream since 2.6.)
+- `overlay/2.10.0/<jar>/` — the classes compiled from those files. The 2.10.0
+  `maestro-cli` jar is ~105 MB (over GitHub's limit), so `scripts/build-jars.sh 2.10.0`
+  builds the release zip from the official `maestro.zip` (sha256-pinned) + this overlay.
+- `assets/maestro-ios-xctest-runner/` — the 2.10.0 runner source (team ID blanked).
+- `assets/jars/<old versions>/` — kept for history, no longer shipped.
 
 ## Status
 
-Validated on real hardware (iPhone 17 Pro, iOS 26.5.1): device lists in maestro-deck,
-screen preview + view-hierarchy inspector + tap/text work. Physical preview is the
-driver `/screenshot` poll (~3fps); smooth 60fps is simulator-only (CoreSimulator
-framebuffer) and a possible future enhancement via AVFoundation/CoreMediaIO.
-
-## TODO (Phase 2)
-
-- Push to a new repo (private first, public later); update `releaseURL` in
-  `internal/maestro/maestro.go` and `release.yml` to zip `assets/jars/2.5.1`.
-- Re-point maestro-deck auto-install (`src-tauri/src/ipc/commands.rs`) at this repo
-  (note: the auto-install download is unauthenticated → only works once the repo is public).
+- 2.10.0 jars: the bridge's patch probe and an iOS simulator flow (launchApp, assert, tap)
+  pass on the patched jars. Not yet validated on a physical iPhone.
+- Physical preview is the driver `/screenshot` poll (~3–5 fps).
