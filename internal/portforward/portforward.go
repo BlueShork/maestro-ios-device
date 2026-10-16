@@ -45,10 +45,13 @@ func (p *PortForwarder) Stop() {
 	p.listener = nil
 }
 
+// Verify waits (up to 2 s) for the local listener to be bound.
 func (p *PortForwarder) Verify() error {
-	time.Sleep(500 * time.Millisecond)
-	if !utils.IsPortBusy(int(p.localPort)) {
-		return fmt.Errorf("port %d not forwarded", p.localPort)
+	for i := 0; i < 40; i++ {
+		if utils.IsPortBusy(int(p.localPort)) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return nil
+	return fmt.Errorf("port %d not forwarded", p.localPort)
 }

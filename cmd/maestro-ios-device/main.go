@@ -72,9 +72,13 @@ func run() {
 		os.Exit(1)
 	}
 
-	if ok, _ := maestro.IsPatched(); !ok {
-		fatal("Maestro not patched. Run: maestro-ios-device setup")
-	}
+	// The patch probe boots the maestro JVM (~3 s): run it alongside the device
+	// bring-up and only check it before announcing Ready.
+	patched := make(chan bool, 1)
+	go func() {
+		ok, _ := maestro.IsPatched()
+		patched <- ok
+	}()
 
 	localPort, err := utils.ResolvePort(*port)
 	if err != nil {
@@ -93,18 +97,8 @@ func run() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Build & start runner
-	r := runner.New(*deviceUDID, *teamID)
-	defer r.Cleanup()
-
-	if err := r.Build(ctx); err != nil {
-		fatal("Build failed: %s", err)
-	}
-
-	if err := r.Start(ctx); err != nil {
-		fatal("Start failed: %s", err)
-	}
-
+	// Forward first: it is how we see whether a runner from an earlier session
+	// is still serving on the device, and Start waits on it for readiness.
 	pf := portforward.New(dev.Entry, uint16(localPort), runner.DevicePort)
 	defer pf.Stop()
 
@@ -114,6 +108,27 @@ func run() {
 
 	if err := pf.Verify(); err != nil {
 		fatal("%s", err)
+	}
+
+	r := runner.New(*deviceUDID, *teamID)
+	defer r.Cleanup()
+
+	if runner.DriverReady(uint16(localPort)) {
+		// The previous xcodebuild host outlived its bridge (e.g. the app was
+		// killed) and its runner still answers: reuse it as is.
+		fmt.Println("♻️  Runner already running on the device")
+	} else {
+		if err := r.Build(ctx); err != nil {
+			fatal("Build failed: %s", err)
+		}
+
+		if err := r.Start(ctx, uint16(localPort)); err != nil {
+			fatal("Start failed: %s", err)
+		}
+	}
+
+	if !<-patched {
+		fatal("Maestro not patched. Run: maestro-ios-device setup")
 	}
 
 	fmt.Println()

@@ -111,9 +111,53 @@ const patchMarkerFlag = "--ios-device-patch"
 
 // The probe exits 0 when the flag parses (help printed) and 2 when picocli
 // rejects it, so a missing or broken maestro also reads as not patched.
+//
+// It boots the maestro JVM (~3 s) on every bridge start, so a positive answer
+// is cached against the installed maestro-cli jar (path, size, mtime): any
+// maestro upgrade or reinstall rewrites that jar and forces a new probe.
 func IsPatched() (bool, error) {
-	err := exec.Command("maestro", patchMarkerFlag, "test", "--help").Run()
-	return err == nil, nil
+	key := patchCacheKey()
+	cache := patchCachePath()
+	if key != "" && cache != "" {
+		if b, err := os.ReadFile(cache); err == nil && string(b) == key {
+			return true, nil
+		}
+	}
+	if err := exec.Command("maestro", patchMarkerFlag, "test", "--help").Run(); err != nil {
+		return false, nil
+	}
+	if key != "" && cache != "" {
+		if os.MkdirAll(filepath.Dir(cache), 0755) == nil {
+			os.WriteFile(cache, []byte(key), 0644)
+		}
+	}
+	return true, nil
+}
+
+func patchCachePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".maestro", "maestro-ios-device", "patched")
+}
+
+// patchCacheKey identifies the maestro-cli jar `maestro` on PATH runs, or ""
+// when it can't be found (then the probe always runs).
+func patchCacheKey() string {
+	libPath, err := getLibPath()
+	if err != nil {
+		return ""
+	}
+	jars, _ := filepath.Glob(filepath.Join(libPath, "maestro-cli-*.jar"))
+	if len(jars) != 1 {
+		return ""
+	}
+	info, err := os.Stat(jars[0])
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s\n%d\n%d", jars[0], info.Size(), info.ModTime().UnixNano())
 }
 
 func GetRunnerPath() (string, error) {

@@ -36,8 +36,30 @@ cannot run a flow on a physical iPhone: `launchApp` and `clearState` hit
 - `assets/maestro-ios-xctest-runner/` — the 2.10.0 runner source (team ID blanked).
 - `assets/jars/<old versions>/` — kept for history, no longer shipped.
 
+## Connection speed
+
+Measured on an iPhone 17 Pro (iOS 26.6.1), bridge start → Ready:
+
+| Case | Before | Now |
+|------|--------|-----|
+| First connection of a device (no cache) | ~60 s | ~22 s |
+| Reconnect, runner build cached | ~60 s | ~4 s |
+| Reconnect, runner still running (bridge killed, xcodebuild survived) | ~60 s | ~0.2 s |
+
+- The runner build lives in `~/.maestro/maestro-ios-device/build/<udid>-<team>/` with a
+  sha256 stamp of the runner source; Swift packages are shared in `…/packages`.
+  `-allowProvisioningUpdates` lets Xcode create the profile for a new iPhone.
+- The forward starts first; a runner that already answers `/status` is reused as is.
+- Readiness = the driver answering `/status` (polled every 200 ms), not log scraping.
+- The maestro patch probe (a ~3 s JVM boot) runs in parallel and its positive result is
+  cached against the installed `maestro-cli` jar (path, size, mtime).
+- Runner `IsScreenStaticHandler` ignores the top 64 pt (status bar / Dynamic Island) and
+  hashes raw pixels: on a real iPhone the clock and live activities kept the whole-screen
+  hash changing, so every Maestro settle wait ran to its 3 s timeout. A 6-step flow went
+  from 31 s to 17 s.
+
 ## Status
 
-- 2.10.0 jars: the bridge's patch probe and an iOS simulator flow (launchApp, assert, tap)
-  pass on the patched jars. Not yet validated on a physical iPhone.
+- 2.10.0 validated on an iPhone 17 Pro (iOS 26.6.1): launchApp (+ clearState), assert,
+  tapOn, back button; also an iOS simulator flow on the patched jars.
 - Physical preview is the driver `/screenshot` poll (~3–5 fps).
