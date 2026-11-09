@@ -15,6 +15,42 @@ index 8df1b2f..e2fbce4 100644
      @Option(
          names = ["--device", "--udid"],
          description = ["(Optional) Device ID to run on explicitly, can be a comma separated list of IDs: --device \"Emulator_1,Emulator_2\" "],
+diff --git a/maestro-cli/src/main/java/maestro/cli/command/McpCommand.kt b/maestro-cli/src/main/java/maestro/cli/command/McpCommand.kt
+index 0936b99..82badc0 100644
+--- a/maestro-cli/src/main/java/maestro/cli/command/McpCommand.kt
++++ b/maestro-cli/src/main/java/maestro/cli/command/McpCommand.kt
+@@ -2,6 +2,7 @@ package maestro.cli.command
+ 
+ import picocli.CommandLine
+ import java.util.concurrent.Callable
++import maestro.cli.App
+ import maestro.cli.mcp.runMaestroMcpServer
+ import maestro.cli.mcp.viewer.McpViewerServer
+ import java.io.File
+@@ -14,6 +15,11 @@ import maestro.cli.util.WorkingDirectory
+     ],
+ )
+ class McpCommand : Callable<Int> {
++    // `maestro --driver-host-port <port> mcp`: a physical iPhone's sessions attach to the
++    // XCTest driver the maestro-ios-device bridge forwards to this port.
++    @CommandLine.ParentCommand
++    private val parent: App? = null
++
+     @CommandLine.Option(
+         names = ["--working-dir"],
+         description = ["Base working directory for resolving files"]
+@@ -44,7 +50,10 @@ class McpCommand : Callable<Int> {
+         }
+ 
+         try {
+-            runMaestroMcpServer(viewerUrl = viewer?.let { "http://127.0.0.1:${it.port}/" })
++            runMaestroMcpServer(
++                viewerUrl = viewer?.let { "http://127.0.0.1:${it.port}/" },
++                iosDriverHostPort = parent?.driverHostPort,
++            )
+         } finally {
+             viewer?.close()
+         }
 diff --git a/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt b/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
 index 924d383..2a55c19 100644
 --- a/maestro-cli/src/main/java/maestro/cli/command/TestCommand.kt
@@ -33,6 +69,159 @@ index 924d383..2a55c19 100644
              return userPort
          }
          // Let the OS pick an available port. ServerSocket(0) guarantees no
+diff --git a/maestro-cli/src/main/java/maestro/cli/mcp/McpMaestroSessionManager.kt b/maestro-cli/src/main/java/maestro/cli/mcp/McpMaestroSessionManager.kt
+index 889a703..ea85e36 100644
+--- a/maestro-cli/src/main/java/maestro/cli/mcp/McpMaestroSessionManager.kt
++++ b/maestro-cli/src/main/java/maestro/cli/mcp/McpMaestroSessionManager.kt
+@@ -1,6 +1,7 @@
+ package maestro.cli.mcp
+ 
+ import device.SimctlIOSDevice
++import ios.devicectl.DeviceControlIOSDevice
+ import ios.xctest.XCTestIOSDevice
+ import maestro.Maestro
+ import maestro.cli.CliError
+@@ -25,9 +26,15 @@ import xcuitest.XCTestDriverClient
+ import xcuitest.installer.Context
+ import xcuitest.installer.LocalXCTestInstaller
+ import xcuitest.installer.LocalXCTestInstaller.IOSDriverConfig
++import java.nio.file.Paths
+ import java.util.concurrent.ConcurrentHashMap
++import kotlin.io.path.pathString
+ 
+-internal class McpMaestroSessionManager : AutoCloseable {
++internal class McpMaestroSessionManager(
++    // Local port of the XCTest driver that the maestro-ios-device bridge runs on a physical
++    // iPhone and forwards over USB. MCP attaches to that driver; it never builds or starts one.
++    private val iosDriverHostPort: Int? = null,
++) : AutoCloseable {
+     private val sessions = ConcurrentHashMap<String, McpMaestroSession>()
+ 
+     fun <T> withSession(
+@@ -65,6 +72,10 @@ internal class McpMaestroSessionManager : AutoCloseable {
+         val device = DeviceService.listConnectedDevices()
+             .find { it.instanceId.equals(deviceId, ignoreCase = true) }
+             ?: throw CliError("Device with id $deviceId is not connected")
++        if (device.platform == Platform.IOS && device.deviceType == Device.DeviceType.REAL) {
++            // The viewer can't stream a physical iPhone, so its session runs without the live view.
++            return createIosSession(device, streamDeviceType = null)
++        }
+         val streamDeviceType = StreamDeviceType.forConnected(device)
+             ?: throw UnsupportedOperationException(
+                 "Device ${device.instanceId} (${device.platform}/${device.deviceType}) is not supported by the MCP server"
+@@ -89,7 +100,7 @@ internal class McpMaestroSessionManager : AutoCloseable {
+         )
+     }
+ 
+-    private fun createIosSession(device: Device.Connected, streamDeviceType: StreamDeviceType): McpMaestroSession {
++    private fun createIosSession(device: Device.Connected, streamDeviceType: StreamDeviceType?): McpMaestroSession {
+         val driver = McpViewerDriver(createIOSDriver(device.instanceId, device.deviceType), "ios")
+         return McpMaestroSession(
+             maestro = Maestro.ios(driver, openDriver = true),
+@@ -114,6 +125,9 @@ internal class McpMaestroSessionManager : AutoCloseable {
+         deviceId: String,
+         deviceType: Device.DeviceType,
+     ): IOSDriver {
++        if (deviceType == Device.DeviceType.REAL) {
++            return createPhysicalIOSDriver(deviceId)
++        }
+         require(deviceType == Device.DeviceType.SIMULATOR) {
+             "Unsupported device type $deviceType for iOS platform"
+         }
+@@ -164,6 +178,74 @@ internal class McpMaestroSessionManager : AutoCloseable {
+         )
+     }
+ 
++    /**
++     * A physical iPhone: attach to the XCTest driver the maestro-ios-device bridge already runs
++     * and forwards to [iosDriverHostPort]. The bridge owns that runner, so MCP never reinstalls
++     * it and never stops it on close (`reinstallDriver = false`), mirroring `maestro test
++     * --driver-host-port` in MaestroSessionManager.
++     */
++    private fun createPhysicalIOSDriver(deviceId: String): IOSDriver {
++        val port = iosDriverHostPort ?: throw CliError(
++            "Physical iPhone $deviceId needs a running driver: start `maestro-ios-device --team-id <TEAM_ID> " +
++                "--device $deviceId`, then start the MCP server as `maestro --driver-host-port <PORT> mcp`"
++        )
++
++        val driverPath = Paths.get(System.getProperty("user.home"), ".maestro")
++            .resolve("maestro-iphoneos-driver-build").resolve("driver-iphoneos")
++            .resolve("Build").resolve("Products")
++        val iOSDriverConfig = IOSDriverConfig(
++            prebuiltRunner = false,
++            sourceDirectory = driverPath.pathString,
++            context = Context.CLI,
++            snapshotKeyHonorModalViews = null,
++        )
++
++        val tempFileHandler = TempFileHandler()
++        val deviceController = DeviceControlIOSDevice(
++            deviceId = util.LocalIOSDevice().listDeviceViaDeviceCtl(deviceId).identifier,
++        )
++
++        val xcTestInstaller = LocalXCTestInstaller(
++            deviceId = deviceId,
++            host = DEFAULT_XCTEST_HOST,
++            defaultPort = port,
++            reinstallDriver = false,
++            deviceType = IOSDeviceType.REAL,
++            iOSDriverConfig = iOSDriverConfig,
++            deviceController = deviceController,
++            tempFileHandler = tempFileHandler,
++            logsDir = TestDebugReporter.getDebugOutputPath().toFile(),
++        )
++        // Fail now with the fix, not after the installer's startup timeout: with nothing on the
++        // port it would try to build and launch a runner itself, which only the bridge can do.
++        if (!xcTestInstaller.isChannelAlive()) {
++            throw CliError(
++                "No XCTest driver answers on $DEFAULT_XCTEST_HOST:$port for $deviceId. " +
++                    "Is `maestro-ios-device --device $deviceId` running and forwarding to port $port?"
++            )
++        }
++
++        val xcTestDevice = XCTestIOSDevice(
++            deviceId = deviceId,
++            client = XCTestDriverClient(
++                installer = xcTestInstaller,
++                client = XCTestClient(DEFAULT_XCTEST_HOST, port),
++                reinstallDriver = false,
++            ),
++            getInstalledApps = { XCRunnerCLIUtils(tempFileHandler).listApps(deviceId) },
++        )
++
++        return IOSDriver(
++            iosDevice = ios.LocalIOSDevice(
++                deviceId = deviceId,
++                xcTestDevice = xcTestDevice,
++                deviceController = deviceController,
++                insights = CliInsights,
++            ),
++            insights = CliInsights,
++        )
++    }
++
+     data class McpMaestroSession(
+         val maestro: Maestro,
+         val platform: String,
+diff --git a/maestro-cli/src/main/java/maestro/cli/mcp/McpServer.kt b/maestro-cli/src/main/java/maestro/cli/mcp/McpServer.kt
+index f097459..83d999f 100644
+--- a/maestro-cli/src/main/java/maestro/cli/mcp/McpServer.kt
++++ b/maestro-cli/src/main/java/maestro/cli/mcp/McpServer.kt
+@@ -67,12 +67,12 @@ internal fun claimMcpStdout() {
+     System.setOut(System.err)
+ }
+ 
+-fun runMaestroMcpServer(viewerUrl: String? = null) {
++fun runMaestroMcpServer(viewerUrl: String? = null, iosDriverHostPort: Int? = null) {
+     // LogConfig silences log4j; the stdout redirect in `claimMcpStdout` catches
+     // everything else. Keep both; they cover different noise sources.
+     LogConfig.configure(logFileName = null, printToConsole = false)
+ 
+-    val sessionManager = McpMaestroSessionManager()
++    val sessionManager = McpMaestroSessionManager(iosDriverHostPort)
+ 
+     val server = Server(
+         serverInfo = Implementation(
 diff --git a/maestro-cli/src/main/java/maestro/cli/session/MaestroSessionManager.kt b/maestro-cli/src/main/java/maestro/cli/session/MaestroSessionManager.kt
 index 59d7fb2..4e0e442 100644
 --- a/maestro-cli/src/main/java/maestro/cli/session/MaestroSessionManager.kt
@@ -96,6 +285,93 @@ index 543360e..d600a93 100644
      )
  
      @JsonIgnoreProperties(ignoreUnknown = true)
+diff --git a/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt b/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt
+index 5641fd0..bb5cc29 100644
+--- a/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt
++++ b/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt
+@@ -1,11 +1,13 @@
+ package util
+ 
+ import com.fasterxml.jackson.databind.DeserializationFeature
++import com.fasterxml.jackson.databind.JsonNode
+ import com.fasterxml.jackson.module.kotlin.KotlinFeature
+ import com.fasterxml.jackson.module.kotlin.KotlinModule
+ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+ import com.fasterxml.jackson.module.kotlin.readValue
+ import java.io.File
++import java.nio.file.Files
+ 
+ class DeviceCtlProcess {
+ 
+@@ -37,6 +39,68 @@ class LocalIOSDevice(private val deviceCtlProcess: DeviceCtlProcess = DeviceCtlP
+         )
+     }
+ 
++    /**
++     * Kills every running process of [bundleIdentifier] and waits until none is left.
++     * devicectl's `process terminate` sends SIGTERM, which an iOS app can outlive, so this
++     * sends SIGKILL, which is what `simctl terminate` amounts to on a simulator.
++     */
++    fun terminateApp(deviceId: String, bundleIdentifier: String) {
++        val appUrl = devicectlJson(listOf("device", "info", "apps", "--device", deviceId, "--bundle-id", bundleIdentifier))
++            .path("result").path("apps").firstOrNull()?.path("url")?.asText()
++            ?: throw IllegalStateException("App $bundleIdentifier is not installed on $deviceId")
++
++        val deadline = System.currentTimeMillis() + 10_000
++        while (true) {
++            val pids = devicectlJson(listOf("device", "info", "processes", "--device", deviceId))
++                .path("result").path("runningProcesses")
++                .filter { it.path("executable").asText().startsWith(appUrl) }
++                .map { it.path("processIdentifier").asLong() }
++            if (pids.isEmpty()) return
++            check(System.currentTimeMillis() < deadline) { "App $bundleIdentifier is still running on $deviceId" }
++
++            pids.forEach { pid ->
++                // The process can exit between the listing and the signal; the next listing tells.
++                runCatching {
++                    CommandLineUtils.runCommand(
++                        listOf("xcrun", "devicectl", "device", "process", "signal", "--device", deviceId,
++                            "--pid", pid.toString(), "--signal", "SIGKILL", "--quiet")
++                    )
++                }
++            }
++            Thread.sleep(200)
++        }
++    }
++
++    /**
++     * Empties the app's data container (Documents, Library, tmp): what a reinstall clears,
++     * without reinstalling. devicectl allows it for apps installed with a development profile.
++     * The keychain is left as is, as after a reinstall.
++     */
++    fun clearAppData(deviceId: String, bundleIdentifier: String) {
++        val empty = Files.createTempDirectory("maestro-empty").toFile()
++        try {
++            for (dir in listOf("Documents", "Library", "tmp")) {
++                CommandLineUtils.runCommand(
++                    listOf("xcrun", "devicectl", "device", "copy", "to", "--device", deviceId,
++                        "--domain-type", "appDataContainer", "--domain-identifier", bundleIdentifier,
++                        "--source", empty.path, "--destination", dir, "--remove-existing-content", "true", "--quiet")
++                )
++            }
++        } finally {
++            empty.delete()
++        }
++    }
++
++    private fun devicectlJson(args: List<String>): JsonNode {
++        val output = File.createTempFile("devicectl_response", ".json")
++        try {
++            CommandLineUtils.runCommand(listOf("xcrun", "devicectl") + args + listOf("--quiet", "--json-output", output.path))
++            return jacksonObjectMapper().readTree(output)
++        } finally {
++            output.delete()
++        }
++    }
++
+     fun listDeviceViaDeviceCtl(deviceId: String): DeviceCtlResponse.Device {
+         val tempOutput = File.createTempFile("devicectl_response", ".json")
+         try {
 diff --git a/maestro-ios/src/main/java/ios/LocalIOSDevice.kt b/maestro-ios/src/main/java/ios/LocalIOSDevice.kt
 index afe8c68..e3867e4 100644
 --- a/maestro-ios/src/main/java/ios/LocalIOSDevice.kt
@@ -116,25 +392,30 @@ index afe8c68..e3867e4 100644
  
      override fun stop(id: String) {
 diff --git a/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt b/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
-index 588942e..6747eb2 100644
+index 588942e..ffe8a95 100644
 --- a/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
 +++ b/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
-@@ -56,7 +56,13 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
+@@ -56,7 +56,18 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
      }
  
      override fun clearAppState(id: String) {
 -        TODO("Not yet implemented")
-+        logger.warn(
-+            "clearState is not supported on real iOS devices due to iOS security restrictions. " +
-+            "App state will NOT be cleared. " +
-+            "Workarounds: (1) Remove clearState from tests, (2) Add app-level reset, " +
-+            "(3) Manually reinstall app between test runs"
-+        )
-+        // Do nothing - test continues without clearing state
++        // Same order as on a simulator: stop the app first so it can't write its state back
++        // after the wipe. The keychain stays, as after a reinstall (clearKeychain is separate).
++        localIOSDevice.terminateApp(deviceId, id)
++        try {
++            localIOSDevice.clearAppData(deviceId, id)
++        } catch (e: IllegalStateException) {
++            throw IllegalStateException(
++                "clearState on a physical iPhone empties the app's data container with devicectl, " +
++                    "which only works for apps installed with a development profile: ${e.message}",
++                e,
++            )
++        }
      }
  
      override fun clearKeychain(): Result<Unit, Throwable> {
-@@ -132,8 +138,9 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
+@@ -132,8 +143,9 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
      }
  
      override fun close() {

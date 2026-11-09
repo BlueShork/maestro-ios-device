@@ -75,6 +75,20 @@ maestro --driver-host-port 6001 --device DEVICE_UDID test flow.yaml
 
 **Find your device UDID:** `xcrun xctrace list devices`, or Finder → select the iPhone.
 
+### With Maestro MCP
+
+Start the MCP server with the bridge's port, then pass the iPhone's UDID as `device_id`
+to the device tools (`inspect_screen`, `take_screenshot`, `run`):
+
+```bash
+maestro --driver-host-port 6001 mcp
+```
+
+Stock maestro's MCP server only drives iOS simulators. The patched one attaches to the
+driver the bridge runs; it never builds, restarts or stops it. Without the port, or with
+no driver answering on it, the tool call fails with how to start the bridge. The Maestro
+Viewer doesn't stream a physical iPhone.
+
 ## Options
 
 | Flag | Description |
@@ -112,7 +126,7 @@ Some commands are restricted by iOS itself:
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `clearState` | ⚠️ No-op | Not permitted on real devices; logs a warning and continues |
+| `clearState` | ✅ Supported | Kills the app, then empties its data container (Documents, Library, tmp) with `devicectl`, what a reinstall clears. Needs an app installed with a development profile. The keychain stays, as after a reinstall |
 | `setLocation` | ⚠️ Limited | Requires extra setup |
 | `addMedia` | ❌ Unsupported | iOS restriction |
 | `openLink`, `clearKeychain`, `startRecording` | ❌ Unsupported | Not implemented for real devices in Maestro |

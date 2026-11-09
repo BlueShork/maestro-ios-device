@@ -26,9 +26,20 @@ cannot run a flow on a physical iPhone: `launchApp` and `clearState` hit
     driver build/validation and the `isShutdown()` probe.
   - `DeviceService`: list iPhones with Developer Mode enabled, not only tunnel-connected ones.
   - `LocalIOSDevice.launch`: fall back to XCTest when devicectl's `launch` is unimplemented.
-  - `DeviceControlIOSDevice`: `clearAppState` logs a warning instead of crashing; `close`
-    keeps the runner app installed so sessions can reuse it.
+  - `DeviceControlIOSDevice`: `clearAppState` SIGKILLs the app's processes and waits until
+    none is left (devicectl's `terminate` sends SIGTERM, which an app can outlive), then
+    empties its data container: `devicectl device copy to --domain-type appDataContainer
+    --remove-existing-content true` of an empty folder onto Documents, Library and tmp
+    (helpers in `util.LocalIOSDevice`). devicectl allows it for apps installed with a
+    development profile; otherwise clearState fails with that reason. The keychain stays,
+    as after a reinstall. `close` keeps the runner app installed so sessions can reuse it.
   - `App`: hidden `--ios-device-patch` marker flag.
+  - MCP (`maestro --driver-host-port <port> mcp`): `McpCommand` passes the parent's
+    `--driver-host-port` through `runMaestroMcpServer` to `McpMaestroSessionManager`. For a
+    physical iPhone the session manager attaches to the bridge's driver on that port with
+    `reinstallDriver = false` (the bridge owns the runner), skips the viewer stream, and
+    fails fast with the fix when the port is missing or no driver answers `/status`.
+    Stock 2.10.0 rejects any iOS device that isn't a simulator in MCP.
   (The `--driver-host-port` option itself is upstream since 2.6.)
 - `overlay/2.10.0/<jar>/` — the classes compiled from those files. The 2.10.0
   `maestro-cli` jar is ~105 MB (over GitHub's limit), so `scripts/build-jars.sh 2.10.0`
@@ -62,4 +73,13 @@ Measured on an iPhone 17 Pro (iOS 26.6.1), bridge start → Ready:
 
 - 2.10.0 validated on an iPhone 17 Pro (iOS 26.6.1): launchApp (+ clearState), assert,
   tapOn, back button; also an iOS simulator flow on the patched jars.
+- MCP on the patched jars (built with `scripts/build-jars.sh`):
+  - iPhone 11 Pro (iOS 18.5) through a live bridge: `inspect_screen`, `take_screenshot`, and
+    `run` (stopApp, launchApp, tapOn, assertVisible). A failing assertion comes back as a tool
+    error. The runner keeps serving after the MCP server exits.
+  - Both error paths: no `--driver-host-port`, and a port with no driver answering.
+  - iOS 26.3 simulator: `inspect_screen` and `take_screenshot`.
+- clearState on an iPhone 11 Pro (iOS 18.5), a development-signed app: `maestro test`
+  (`clearState`) and MCP `run` (`launchApp: clearState: true`). The data container went
+  from 68 entries to the 7 empty base folders and the app was stopped. About 2 s per clear.
 - Physical preview is the driver `/screenshot` poll (~3–5 fps).
