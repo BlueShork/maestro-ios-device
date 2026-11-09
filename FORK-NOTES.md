@@ -68,7 +68,10 @@ Measured on an iPhone 17 Pro (iOS 26.6.1), bridge start → Ready:
 
 - 2.10.0 validated on an iPhone 17 Pro (iOS 26.6.1): launchApp (+ clearState), assert,
   tapOn, back button; also an iOS simulator flow on the patched jars.
-- MCP on the patched jars (built with `scripts/build-jars.sh`): `inspect_screen` and
-  `take_screenshot` on an iOS 26.3 simulator, and both error paths on a physical iPhone 11
-  Pro (iOS 18.5). Not yet run against a live bridge on a physical iPhone.
+- MCP on the patched jars (built with `scripts/build-jars.sh`):
+  - iPhone 11 Pro (iOS 18.5) through a live bridge: `inspect_screen`, `take_screenshot`, and
+    `run` (stopApp, launchApp, tapOn, assertVisible). A failing assertion comes back as a tool
+    error. The runner keeps serving after the MCP server exits.
+  - Both error paths: no `--driver-host-port`, and a port with no driver answering.
+  - iOS 26.3 simulator: `inspect_screen` and `take_screenshot`.
 - Physical preview is the driver `/screenshot` poll (~3–5 fps).
