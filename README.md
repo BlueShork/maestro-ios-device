@@ -126,7 +126,7 @@ Some commands are restricted by iOS itself:
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `clearState` | ⚠️ No-op | Not permitted on real devices; logs a warning and continues |
+| `clearState` | ✅ Supported | Kills the app, then empties its data container (Documents, Library, tmp) with `devicectl`, what a reinstall clears. Needs an app installed with a development profile. The keychain stays, as after a reinstall |
 | `setLocation` | ⚠️ Limited | Requires extra setup |
 | `addMedia` | ❌ Unsupported | iOS restriction |
 | `openLink`, `clearKeychain`, `startRecording` | ❌ Unsupported | Not implemented for real devices in Maestro |

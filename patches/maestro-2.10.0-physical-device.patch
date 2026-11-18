@@ -285,6 +285,93 @@ index 543360e..d600a93 100644
      )
  
      @JsonIgnoreProperties(ignoreUnknown = true)
+diff --git a/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt b/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt
+index 5641fd0..bb5cc29 100644
+--- a/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt
++++ b/maestro-ios-driver/src/main/kotlin/util/LocalIOSDevice.kt
+@@ -1,11 +1,13 @@
+ package util
+ 
+ import com.fasterxml.jackson.databind.DeserializationFeature
++import com.fasterxml.jackson.databind.JsonNode
+ import com.fasterxml.jackson.module.kotlin.KotlinFeature
+ import com.fasterxml.jackson.module.kotlin.KotlinModule
+ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+ import com.fasterxml.jackson.module.kotlin.readValue
+ import java.io.File
++import java.nio.file.Files
+ 
+ class DeviceCtlProcess {
+ 
+@@ -37,6 +39,68 @@ class LocalIOSDevice(private val deviceCtlProcess: DeviceCtlProcess = DeviceCtlP
+         )
+     }
+ 
++    /**
++     * Kills every running process of [bundleIdentifier] and waits until none is left.
++     * devicectl's `process terminate` sends SIGTERM, which an iOS app can outlive, so this
++     * sends SIGKILL, which is what `simctl terminate` amounts to on a simulator.
++     */
++    fun terminateApp(deviceId: String, bundleIdentifier: String) {
++        val appUrl = devicectlJson(listOf("device", "info", "apps", "--device", deviceId, "--bundle-id", bundleIdentifier))
++            .path("result").path("apps").firstOrNull()?.path("url")?.asText()
++            ?: throw IllegalStateException("App $bundleIdentifier is not installed on $deviceId")
++
++        val deadline = System.currentTimeMillis() + 10_000
++        while (true) {
++            val pids = devicectlJson(listOf("device", "info", "processes", "--device", deviceId))
++                .path("result").path("runningProcesses")
++                .filter { it.path("executable").asText().startsWith(appUrl) }
++                .map { it.path("processIdentifier").asLong() }
++            if (pids.isEmpty()) return
++            check(System.currentTimeMillis() < deadline) { "App $bundleIdentifier is still running on $deviceId" }
++
++            pids.forEach { pid ->
++                // The process can exit between the listing and the signal; the next listing tells.
++                runCatching {
++                    CommandLineUtils.runCommand(
++                        listOf("xcrun", "devicectl", "device", "process", "signal", "--device", deviceId,
++                            "--pid", pid.toString(), "--signal", "SIGKILL", "--quiet")
++                    )
++                }
++            }
++            Thread.sleep(200)
++        }
++    }
++
++    /**
++     * Empties the app's data container (Documents, Library, tmp): what a reinstall clears,
++     * without reinstalling. devicectl allows it for apps installed with a development profile.
++     * The keychain is left as is, as after a reinstall.
++     */
++    fun clearAppData(deviceId: String, bundleIdentifier: String) {
++        val empty = Files.createTempDirectory("maestro-empty").toFile()
++        try {
++            for (dir in listOf("Documents", "Library", "tmp")) {
++                CommandLineUtils.runCommand(
++                    listOf("xcrun", "devicectl", "device", "copy", "to", "--device", deviceId,
++                        "--domain-type", "appDataContainer", "--domain-identifier", bundleIdentifier,
++                        "--source", empty.path, "--destination", dir, "--remove-existing-content", "true", "--quiet")
++                )
++            }
++        } finally {
++            empty.delete()
++        }
++    }
++
++    private fun devicectlJson(args: List<String>): JsonNode {
++        val output = File.createTempFile("devicectl_response", ".json")
++        try {
++            CommandLineUtils.runCommand(listOf("xcrun", "devicectl") + args + listOf("--quiet", "--json-output", output.path))
++            return jacksonObjectMapper().readTree(output)
++        } finally {
++            output.delete()
++        }
++    }
++
+     fun listDeviceViaDeviceCtl(deviceId: String): DeviceCtlResponse.Device {
+         val tempOutput = File.createTempFile("devicectl_response", ".json")
+         try {
 diff --git a/maestro-ios/src/main/java/ios/LocalIOSDevice.kt b/maestro-ios/src/main/java/ios/LocalIOSDevice.kt
 index afe8c68..e3867e4 100644
 --- a/maestro-ios/src/main/java/ios/LocalIOSDevice.kt
@@ -305,25 +392,30 @@ index afe8c68..e3867e4 100644
  
      override fun stop(id: String) {
 diff --git a/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt b/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
-index 588942e..6747eb2 100644
+index 588942e..ffe8a95 100644
 --- a/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
 +++ b/maestro-ios/src/main/java/ios/devicectl/DeviceControlIOSDevice.kt
-@@ -56,7 +56,13 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
+@@ -56,7 +56,18 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
      }
  
      override fun clearAppState(id: String) {
 -        TODO("Not yet implemented")
-+        logger.warn(
-+            "clearState is not supported on real iOS devices due to iOS security restrictions. " +
-+            "App state will NOT be cleared. " +
-+            "Workarounds: (1) Remove clearState from tests, (2) Add app-level reset, " +
-+            "(3) Manually reinstall app between test runs"
-+        )
-+        // Do nothing - test continues without clearing state
++        // Same order as on a simulator: stop the app first so it can't write its state back
++        // after the wipe. The keychain stays, as after a reinstall (clearKeychain is separate).
++        localIOSDevice.terminateApp(deviceId, id)
++        try {
++            localIOSDevice.clearAppData(deviceId, id)
++        } catch (e: IllegalStateException) {
++            throw IllegalStateException(
++                "clearState on a physical iPhone empties the app's data container with devicectl, " +
++                    "which only works for apps installed with a development profile: ${e.message}",
++                e,
++            )
++        }
      }
  
      override fun clearKeychain(): Result<Unit, Throwable> {
-@@ -132,8 +138,9 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
+@@ -132,8 +143,9 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
      }
  
      override fun close() {
