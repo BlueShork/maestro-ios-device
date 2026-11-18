@@ -75,6 +75,20 @@ maestro --driver-host-port 6001 --device DEVICE_UDID test flow.yaml
 
 **Find your device UDID:** `xcrun xctrace list devices`, or Finder → select the iPhone.
 
+### With Maestro MCP
+
+Start the MCP server with the bridge's port, then pass the iPhone's UDID as `device_id`
+to the device tools (`inspect_screen`, `take_screenshot`, `run`):
+
+```bash
+maestro --driver-host-port 6001 mcp
+```
+
+Stock maestro's MCP server only drives iOS simulators. The patched one attaches to the
+driver the bridge runs; it never builds, restarts or stops it. Without the port, or with
+no driver answering on it, the tool call fails with how to start the bridge. The Maestro
+Viewer doesn't stream a physical iPhone.
+
 ## Options
 
 | Flag | Description |

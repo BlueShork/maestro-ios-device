@@ -29,6 +29,12 @@ cannot run a flow on a physical iPhone: `launchApp` and `clearState` hit
   - `DeviceControlIOSDevice`: `clearAppState` logs a warning instead of crashing; `close`
     keeps the runner app installed so sessions can reuse it.
   - `App`: hidden `--ios-device-patch` marker flag.
+  - MCP (`maestro --driver-host-port <port> mcp`): `McpCommand` passes the parent's
+    `--driver-host-port` through `runMaestroMcpServer` to `McpMaestroSessionManager`. For a
+    physical iPhone the session manager attaches to the bridge's driver on that port with
+    `reinstallDriver = false` (the bridge owns the runner), skips the viewer stream, and
+    fails fast with the fix when the port is missing or no driver answers `/status`.
+    Stock 2.10.0 rejects any iOS device that isn't a simulator in MCP.
   (The `--driver-host-port` option itself is upstream since 2.6.)
 - `overlay/2.10.0/<jar>/` — the classes compiled from those files. The 2.10.0
   `maestro-cli` jar is ~105 MB (over GitHub's limit), so `scripts/build-jars.sh 2.10.0`
@@ -62,4 +68,10 @@ Measured on an iPhone 17 Pro (iOS 26.6.1), bridge start → Ready:
 
 - 2.10.0 validated on an iPhone 17 Pro (iOS 26.6.1): launchApp (+ clearState), assert,
   tapOn, back button; also an iOS simulator flow on the patched jars.
+- MCP on the patched jars (built with `scripts/build-jars.sh`):
+  - iPhone 11 Pro (iOS 18.5) through a live bridge: `inspect_screen`, `take_screenshot`, and
+    `run` (stopApp, launchApp, tapOn, assertVisible). A failing assertion comes back as a tool
+    error. The runner keeps serving after the MCP server exits.
+  - Both error paths: no `--driver-host-port`, and a port with no driver answering.
+  - iOS 26.3 simulator: `inspect_screen` and `take_screenshot`.
 - Physical preview is the driver `/screenshot` poll (~3–5 fps).
