@@ -6,7 +6,8 @@
 
 set -e
 
-REPO="devicelab-dev/maestro-ios-device"
+# This fork's releases: devicelab's binary only patches maestro 2.0.9-2.1.0.
+REPO="BlueShork/maestro-ios-device"
 BINARY_NAME="maestro-ios-device"
 
 # Colors
@@ -34,8 +35,18 @@ echo "  2. Download and extract patched JARs to ~/.maestro/lib"
 echo "  3. Download and extract iOS runner to ~/.maestro/maestro-ios-xctest-runner"
 echo ""
 
-printf "Continue with installation? [y/N] "
-read -r REPLY </dev/tty
+# -y / --yes, or no terminal (CI, provisioning over ssh): install without asking.
+case "${1:-}" in
+    -y | --yes) REPLY=y ;;
+    *)
+        if [ -t 0 ] || { [ -r /dev/tty ] && (: </dev/tty) 2>/dev/null; }; then
+            printf "Continue with installation? [y/N] "
+            read -r REPLY </dev/tty
+        else
+            REPLY=y
+        fi
+        ;;
+esac
 if [ "$REPLY" != "y" ] && [ "$REPLY" != "Y" ]; then
     echo "Installation cancelled."
     exit 1
